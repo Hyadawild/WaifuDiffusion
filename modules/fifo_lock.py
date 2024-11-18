@@ -2,36 +2,52 @@ import threading
 import collections
 
 
-# reference: https://gist.github.com/vitaliyp/6d54dd76ca2c3cdfc1149d33007dc34a
-class FIFOLock(object):
+class FIFOLock:
+    """
+    A lock that grants access to threads in a first-in, first-out (FIFO) order.
+    """
     def __init__(self):
         self._lock = threading.Lock()
-        self._inner_lock = threading.Lock()
-        self._pending_threads = collections.deque()
+        self._queue_lock = threading.Lock()  # Protects access to the queue.
+        self._waiting_threads = collections.deque()
 
     def acquire(self, blocking=True):
-        with self._inner_lock:
-            lock_acquired = self._lock.acquire(False)
-            if lock_acquired:
+        """
+        Acquire the lock in FIFO order.
+        
+        :param blocking: If False, returns immediately if the lock is unavailable.
+        :return: True if the lock was acquired, False otherwise (only if blocking is False).
+        """
+        with self._queue_lock:
+            # Try to acquire the main lock immediately.
+            if self._lock.acquire(False):
                 return True
-            elif not blocking:
+            if not blocking:
                 return False
 
+            # Otherwise, add the thread to the waiting queue.
             release_event = threading.Event()
-            self._pending_threads.append(release_event)
+            self._waiting_threads.append(release_event)
 
+        # Wait until this thread is signaled.
         release_event.wait()
-        return self._lock.acquire()
+        self._lock.acquire()
+        return True
 
     def release(self):
-        with self._inner_lock:
-            if self._pending_threads:
-                release_event = self._pending_threads.popleft()
-                release_event.set()
+        """
+        Release the lock and notify the next thread in the queue, if any.
+        """
+        with self._queue_lock:
+            if self._waiting_threads:
+                # Wake up the next thread in the queue.
+                next_event = self._waiting_threads.popleft()
+                next_event.set()
 
-            self._lock.release()
+        self._lock.release()
 
-    __enter__ = acquire
+    def __enter__(self):
+        self.acquire()
 
-    def __exit__(self, t, v, tb):
+    def __exit__(self, exc_type, exc_value, traceback):
         self.release()
